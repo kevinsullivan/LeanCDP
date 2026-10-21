@@ -2,8 +2,8 @@
 RFC 4648 base64, from scratch. Lean's bundled `Std` doesn't ship it, and
 the WebSocket handshake needs it: the client's `Sec-WebSocket-Key`
 nonce and the server's expected `Sec-WebSocket-Accept` are both base64
-text. Encode is what the handshake actually needs; decode is included
-for symmetry and so the round-trip property is testable.
+text. Encode is what the handshake needs; decode is included for
+symmetry and so the round-trip property is testable.
 -/
 
 namespace LeanCDP.Codec.Base64

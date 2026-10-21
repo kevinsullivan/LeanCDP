@@ -1,6 +1,5 @@
 /-
-`leancdp-test`: the test suite proving `LeanCDP` actually works, not
-just that it type-checks.
+`leancdp-test`: the test suite.
 
 Pure vectors (FIPS 180-1 SHA-1, RFC 4648 base64, the RFC 6455 §1.3
 worked handshake example, and `Discovery.parseWsUrl`) check the
