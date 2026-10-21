@@ -1,0 +1,80 @@
+{
+	"name": "LeanCDP",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+	// Use the non-root user created in the Dockerfile
+	"remoteUser": "dev",
+	"overrideCommand": false,
+	"updateRemoteUserUID": true,
+	"containerEnv": {
+		"WORKSPACE_FOLDER": "${containerWorkspaceFolder}"
+	},
+	// Make elan/lean/lake available in VS Code shells & tasks.
+	// IMPORTANT: use the container's HOME, not the host's.
+	"remoteEnv": {
+		"PATH": "/home/dev/.elan/bin:/home/dev/.local/bin:${containerEnv:PATH}"
+	},
+	// Persist Claude Code history (~/.claude) across container rebuilds via a
+	// named volume. A fresh volume mounts root-owned, so chown it to dev once
+	// on create (dev has passwordless sudo). Note: do NOT mount all of
+	// /home/dev -- an empty volume there would shadow the image-baked ~/.elan
+	// and the Claude binary in ~/.local.
+	"mounts": [
+		"source=leancdp-claude,target=/home/dev/.claude,type=volume"
+	],
+	"postCreateCommand": "sudo chown -R dev:dev /home/dev/.claude",
+	"runArgs": [
+		"--memory=4gb",
+		"--init",
+		"--cap-add=SYS_PTRACE",
+		"--security-opt",
+		"seccomp=unconfined"
+	],
+	// 9222: the headless Chromium --remote-debugging-port this project's own
+	// demos (leancdp-chromium-demo, leancdp-screenshot) talk to. See README.md.
+	"forwardPorts": [
+		9222
+	],
+	"portsAttributes": {
+		"9222": {
+			"label": "Chromium CDP",
+			"onAutoForward": "notify"
+		}
+	},
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"terminal.integrated.defaultProfile.linux": "bash",
+				// Extensions below are pinned. Without this, VS Code updates them
+				// on first launch and drifts away from what was tested here.
+				"extensions.autoUpdate": false
+			},
+			"extensions": [
+				"leanprover.lean4@0.0.239",
+				"denis-gorbachev.lean4-code-actions@1.1.32",
+				"shreyassrinivas.loogle-lean@0.0.9",
+				"Anthropic.claude-code@2.1.259",
+				"github.copilot@1.388.0",
+				"eamodio.gitlens@19.1.0",
+				"github.vscode-pull-request-github@0.164.0",
+				"github.vscode-github-actions@0.32.3",
+				"aaron-bond.better-comments@3.0.2",
+				"alefragnani.bookmarks@14.1.1",
+				"streetsidesoftware.code-spell-checker@4.7.3",
+				"usernamehw.errorlens@3.28.0",
+				"sleistner.vscode-fileutils@3.10.3",
+				"oderwat.indent-rainbow@8.3.1",
+				"yzhang.markdown-all-in-one@3.6.3",
+				"davidanson.vscode-markdownlint@0.62.1",
+				"pkief.material-icon-theme@5.38.1",
+				"cardinal90.multi-cursor-case-preserve@1.0.5",
+				"zhuangtongfa.material-theme@3.20.2",
+				"christian-kohler.path-intellisense@2.10.0",
+				"stkb.rewrap@1.16.3",
+				"gruntfuggly.todo-tree@0.0.226",
+				"redhat.vscode-yaml@1.24.0"
+			]
+		}
+	}
+}

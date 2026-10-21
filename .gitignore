@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Lean / Lake build artifacts
+.lake/
+build/
+
+# Screenshots written by `leancdp-chromium-demo` / `leancdp-screenshot` --
+# generated output, not source.
+*.png
