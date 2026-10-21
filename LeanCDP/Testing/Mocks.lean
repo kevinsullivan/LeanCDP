@@ -242,6 +242,39 @@ partial def runCdpMockServerOnce (srv : TCP.Socket.Server) : Async Unit := do
   loop
 
 /--
+Accept one connection, perform the handshake, then answer every
+`{"jsonrpc":"2.0","id","method","params"}` text frame with
+`{"jsonrpc":"2.0","id","result":{"echoedMethod","params"}}`, throwing
+if a request is missing the version field. Stops on `Close`.
+-/
+partial def runJsonRpc2MockServerOnce (srv : TCP.Socket.Server) : Async Unit := do
+  let client ← srv.accept
+  let buf ← IO.mkRef ByteArray.empty
+  let p : Peer := ⟨client, buf⟩
+  p.doHandshake
+  let rec loop : Async Unit := do
+    let (opcode, payload) ← p.recvMaskedFrame
+    if opcode == 0x8 then
+      client.send (unmaskedFrame true 0x8 ByteArray.empty)
+    else if opcode == 0x1 then
+      match Json.parse (String.fromUTF8! payload) with
+      | .error e => throw <| .userError s!"Mocks.runJsonRpc2MockServerOnce: bad JSON from client: {e}"
+      | .ok req =>
+        if (req.getObjValD "jsonrpc").getStr?.toOption != some "2.0" then
+          throw <| .userError "Mocks.runJsonRpc2MockServerOnce: request missing jsonrpc 2.0 field"
+        let id := req.getObjValD "id"
+        let method := req.getObjValD "method"
+        let params := req.getObjValD "params"
+        let reply := Json.mkObj
+          [("jsonrpc", Json.str "2.0"), ("id", id),
+            ("result", Json.mkObj [("echoedMethod", method), ("params", params)])]
+        client.send (unmaskedFrame true 0x1 reply.compress.toUTF8)
+        loop
+    else
+      loop
+  loop
+
+/--
 Accept one connection, perform the handshake, send one text frame
 containing an invalid UTF-8 byte (`0x80`, a bare continuation byte),
 then read the next frame and report whether it was a `Close` carrying

@@ -23,7 +23,9 @@ code against it over an actual loopback TCP connection:
 - the CDP test covers `Protocol.Client.call`'s request-id round trip,
   an event arriving with no call in flight (`nextEvent`), and two
   calls answered out of send order both resolving to the *correct*
-  caller.
+  caller;
+- the JSON-RPC 2.0 test covers `Rpc.connect Dialects.jsonRpc2`'s
+  round trip against a server speaking that dialect instead of CDP's.
 
 A live Chromium is covered separately by `ChromiumDemo.lean`. See
 `README.md` for what's out of scope.
@@ -184,6 +186,20 @@ def cdpChecks : IO (List Check) := do
   let (_, cs) ← ((Testing.runCdpMockServerOnce srv).concurrently (cdpClient port)).block
   return cs
 
+/-- Client side of the JSON-RPC 2.0 test, against `Mocks.runJsonRpc2MockServerOnce`. -/
+def jsonRpc2Client (port : UInt16) : Async Check := do
+  let client ← Rpc.connect Dialects.jsonRpc2 "127.0.0.1" port "/jsonrpc2-test"
+  let result ← client.call "ping" (Json.mkObj [("x", Json.num 1)])
+  client.close
+  let expected := Json.mkObj [("echoedMethod", Json.str "ping"), ("params", Json.mkObj [("x", Json.num 1)])]
+  return ⟨"Rpc.Client.call round-trips over the JSON-RPC 2.0 dialect", result == expected⟩
+
+def jsonRpc2Checks : IO (List Check) := do
+  let port : UInt16 := 19229
+  let srv ← (Testing.listenOn port).block
+  let (_, c) ← ((Testing.runJsonRpc2MockServerOnce srv).concurrently (jsonRpc2Client port)).block
+  return [c]
+
 -- `main` exits via `IO.Process.exit` rather than `return`: the live checks leave
 -- libuv TCP sockets and its background event-loop thread behind even once
 -- every `Async` action involved has produced its result, which otherwise
@@ -191,7 +207,7 @@ def cdpChecks : IO (List Check) := do
 def main : IO Unit := do
   let live :=
     (← websocketEchoChecks) ++ (← utf8Checks) ++ (← extensionChecks) ++
-    (← discoveryChecks) ++ (← dnsChecks) ++ (← cdpChecks)
+    (← discoveryChecks) ++ (← dnsChecks) ++ (← cdpChecks) ++ (← jsonRpc2Checks)
   let all := pureChecks ++ live
   for c in all do
     let status := if c.ok then "ok  " else "FAIL"

@@ -2,7 +2,9 @@
 
 A pure-Lean 4 client for the Chrome DevTools Protocol (CDP), the
 JSON-RPC-over-WebSocket protocol that Playwright and Puppeteer use to
-drive a browser.
+drive a browser. Built on a generic WebSocket JSON-RPC client
+(`LeanCDP.Rpc`) that CDP is one pluggable *dialect* of -- see
+[Other dialects](#other-dialects).
 
 A plain Lake package with no `require`s. No Mathlib, no FFI, no
 dependency beyond the Lean 4 toolchain itself.
@@ -41,17 +43,20 @@ base64, both needed for the WebSocket handshake — are implemented in
 | `LeanCDP.Codec.Base64` | RFC 4648 base64 encode/decode. |
 | `LeanCDP.Codec.SHA1` | FIPS 180-1 SHA-1. |
 | `LeanCDP.WebSocket` | RFC 6455 client: handshake, client-side masking, all three payload-length encodings, fragment reassembly, `Ping`/`Pong`, UTF-8 validation of Text messages. |
-| `LeanCDP.Protocol` | The CDP JSON-RPC envelope. A background reader per `Client` dispatches responses by request `id`, so multiple calls can be in flight at once, and queues id-less messages as events (`pollEvent`/`nextEvent`/the session-filtered `*Matching` variants). |
+| `LeanCDP.Rpc` | A generic WebSocket JSON-RPC client. A background reader per `Client` dispatches responses by request `id`, so multiple calls can be in flight at once, and queues id-less messages as events (`pollEvent`/`nextEvent`/the `*Matching` variants). Protocol-agnostic: a `Dialect` supplies request framing and response classification. |
+| `LeanCDP.Dialects` | `cdp` and `jsonRpc2`, the two `Rpc.Dialect`s this package ships. |
+| `LeanCDP.Protocol` | The CDP-flavored client: `Rpc` plus `Dialects.cdp`, with CDP's session-scoped calls (`callSession`) and session-filtered events layered on top. |
 | `LeanCDP.Discovery` | Reads `GET /json/version` and parses `webSocketDebuggerUrl`. |
 | `LeanCDP.Page` | `Target.createTarget`/`attachToTarget`, `Page.navigate`/`captureScreenshot`, and `waitForLoad`, which waits on `Page.loadEventFired` scoped to its own session. |
 
 Each layer depends only on the one below it: `Transport` knows
-nothing about WebSockets; `WebSocket` knows nothing about CDP or
-JSON; `Protocol` knows nothing about how the WebSocket URL was found.
+nothing about WebSockets; `WebSocket` knows nothing about RPC;
+`Rpc` knows nothing about CDP or JSON-RPC 2.0 specifically -- a
+`Dialect` is the only thing that does.
 
 ## Tests
 
-`LeanCDP.Testing.Mocks` implements five small WebSocket/HTTP servers,
+`LeanCDP.Testing.Mocks` implements six small WebSocket/HTTP servers,
 independent of the client's own code, and `Tests.lean` drives the
 real client against each over loopback TCP:
 
@@ -66,7 +71,10 @@ real client against each over loopback TCP:
 - a CDP peer that echoes `{"id","method","params"}` as
   `{"id","result"}`, with an artificial delay on one method: request
   correlation, event delivery with no call in flight, and two calls
-  answered out of order both resolving to the correct caller.
+  answered out of order both resolving to the correct caller;
+- a JSON-RPC 2.0 peer, same shape but requiring the `"jsonrpc":"2.0"`
+  field: `Rpc.connect Dialects.jsonRpc2` round-trips through a
+  different dialect than CDP's.
 
 Plus pure-function vectors for SHA-1 (FIPS 180-1), base64 (RFC 4648),
 and the RFC 6455 §1.3 handshake example.
@@ -76,7 +84,7 @@ lake build
 lake exe leancdp-test
 ```
 
-22 checks, passing via `lake exe` and the built binary directly.
+23 checks, passing via `lake exe` and the built binary directly.
 
 ### Against a real Chromium
 
@@ -120,6 +128,32 @@ Everything in `LeanCDP` runs in the `Async` monad. An `IO`-returning
 lake exe leancdp-probe <ipv4-host> <port> [path]
 ```
 
+## Other dialects
+
+`LeanCDP.Protocol` is `LeanCDP.Rpc` plus `LeanCDP.Dialects.cdp`.
+Anything else that puts JSON-RPC-shaped requests on a WebSocket --
+`{"id","method","params"}`, responses keyed by that `id`, id-less
+messages as events -- is reachable the same way, by supplying a
+different `Rpc.Dialect`. This package also ships `Dialects.jsonRpc2`,
+for strict JSON-RPC 2.0 servers:
+
+```lean
+import LeanCDP
+
+open LeanCDP Std.Async
+
+def main : IO Unit := do
+  let client ← (Rpc.connect Dialects.jsonRpc2 "127.0.0.1" 8080 "/").block
+  let result ← (client.call "some.method" (Lean.Json.mkObj [])).block
+  IO.println result.compress
+  (client.close).block
+```
+
+A third dialect -- say, for WebDriver BiDi, whose error envelope is a
+flat `{"error":"<string>","message":"<string>"}` rather than CDP's
+nested `{"error":{"code","message"}}` -- is a `Dialect` value (a
+`buildRequest` and a `parse`), not a change to `Rpc` itself.
+
 ## Design notes
 
 - **No `permessage-deflate` or other WebSocket extensions.** The
@@ -146,8 +180,11 @@ lake exe leancdp-probe <ipv4-host> <port> [path]
 - No CDP target other than Chromium. Firefox's `--remote-debugging-port`
   serves WebDriver BiDi, not CDP -- `WebSocket` interoperates with it
   (the RFC 6455 handshake and framing are protocol-agnostic), and a
-  well-formed BiDi command round-trips through `Protocol.Client.call`
-  since both protocols' success envelopes are `{"id","result"}`, but
-  BiDi's error envelope (`{"error":"<string>","message":"<string>"}`)
-  doesn't match `Message.parse`'s CDP-shaped `{"error":{"code",
-  "message"}}`, so errors from a non-CDP peer decode as empty.
+  well-formed BiDi command round-trips through `Rpc.Client.call` using
+  `Dialects.cdp` since both protocols' success envelopes are
+  `{"id","result"}`, but BiDi's error envelope
+  (`{"error":"<string>","message":"<string>"}`) doesn't match
+  `Dialects.cdp`'s nested `{"error":{"code","message"}}`, so errors
+  from a non-CDP peer decode as empty. A `Dialects.bidi` would fix
+  this the same way `jsonRpc2` was added -- see
+  [Other dialects](#other-dialects) -- but doesn't exist yet.
