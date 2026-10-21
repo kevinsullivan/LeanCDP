@@ -275,6 +275,43 @@ partial def runJsonRpc2MockServerOnce (srv : TCP.Socket.Server) : Async Unit := 
   loop
 
 /--
+Accept one connection, perform the handshake, then answer every
+`{"id","method","params"}` text frame WebDriver-BiDi-style: method
+`"boom"` gets `{"type":"error","id","error":"boom error",
+"message":"boom detail"}`, anything else gets
+`{"type":"success","id","result":{"echoedMethod","params"}}`. Stops
+on `Close`.
+-/
+partial def runBidiMockServerOnce (srv : TCP.Socket.Server) : Async Unit := do
+  let client ← srv.accept
+  let buf ← IO.mkRef ByteArray.empty
+  let p : Peer := ⟨client, buf⟩
+  p.doHandshake
+  let rec loop : Async Unit := do
+    let (opcode, payload) ← p.recvMaskedFrame
+    if opcode == 0x8 then
+      client.send (unmaskedFrame true 0x8 ByteArray.empty)
+    else if opcode == 0x1 then
+      match Json.parse (String.fromUTF8! payload) with
+      | .error e => throw <| .userError s!"Mocks.runBidiMockServerOnce: bad JSON from client: {e}"
+      | .ok req =>
+        let id := req.getObjValD "id"
+        let method := req.getObjValD "method"
+        let params := req.getObjValD "params"
+        let reply :=
+          if (method.getStr?.toOption.getD "") == "boom" then
+            Json.mkObj [("type", Json.str "error"), ("id", id),
+              ("error", Json.str "boom error"), ("message", Json.str "boom detail")]
+          else
+            Json.mkObj [("type", Json.str "success"), ("id", id),
+              ("result", Json.mkObj [("echoedMethod", method), ("params", params)])]
+        client.send (unmaskedFrame true 0x1 reply.compress.toUTF8)
+        loop
+    else
+      loop
+  loop
+
+/--
 Accept one connection, perform the handshake, send one text frame
 containing an invalid UTF-8 byte (`0x80`, a bare continuation byte),
 then read the next frame and report whether it was a `Close` carrying

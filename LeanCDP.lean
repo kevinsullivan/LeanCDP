@@ -5,6 +5,7 @@ import LeanCDP.WebSocket
 import LeanCDP.Rpc
 import LeanCDP.Dialects.Cdp
 import LeanCDP.Dialects.JsonRpc2
+import LeanCDP.Dialects.Bidi
 import LeanCDP.Protocol
 import LeanCDP.Discovery
 import LeanCDP.Page

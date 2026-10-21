@@ -44,7 +44,7 @@ base64, both needed for the WebSocket handshake — are implemented in
 | `LeanCDP.Codec.SHA1` | FIPS 180-1 SHA-1. |
 | `LeanCDP.WebSocket` | RFC 6455 client: handshake, client-side masking, all three payload-length encodings, fragment reassembly, `Ping`/`Pong`, UTF-8 validation of Text messages. |
 | `LeanCDP.Rpc` | A generic WebSocket JSON-RPC client. A background reader per `Client` dispatches responses by request `id`, so multiple calls can be in flight at once, and queues id-less messages as events (`pollEvent`/`nextEvent`/the `*Matching` variants). Protocol-agnostic: a `Dialect` supplies request framing and response classification. |
-| `LeanCDP.Dialects` | `cdp` and `jsonRpc2`, the two `Rpc.Dialect`s this package ships. |
+| `LeanCDP.Dialects` | `cdp`, `jsonRpc2`, and `bidi` -- the `Rpc.Dialect`s this package ships. |
 | `LeanCDP.Protocol` | The CDP-flavored client: `Rpc` plus `Dialects.cdp`, with CDP's session-scoped calls (`callSession`) and session-filtered events layered on top. |
 | `LeanCDP.Discovery` | Reads `GET /json/version` and parses `webSocketDebuggerUrl`. |
 | `LeanCDP.Page` | `Target.createTarget`/`attachToTarget`, `Page.navigate`/`captureScreenshot`, and `waitForLoad`, which waits on `Page.loadEventFired` scoped to its own session. |
@@ -56,7 +56,7 @@ nothing about WebSockets; `WebSocket` knows nothing about RPC;
 
 ## Tests
 
-`LeanCDP.Testing.Mocks` implements six small WebSocket/HTTP servers,
+`LeanCDP.Testing.Mocks` implements seven small WebSocket/HTTP servers,
 independent of the client's own code, and `Tests.lean` drives the
 real client against each over loopback TCP:
 
@@ -74,7 +74,11 @@ real client against each over loopback TCP:
   answered out of order both resolving to the correct caller;
 - a JSON-RPC 2.0 peer, same shape but requiring the `"jsonrpc":"2.0"`
   field: `Rpc.connect Dialects.jsonRpc2` round-trips through a
-  different dialect than CDP's.
+  different dialect than CDP's;
+- a WebDriver-BiDi-shaped peer, using `"type":"success"`/`"error"`/
+  `"event"` instead of CDP's implicit shape: `Dialects.bidi` decodes
+  both a successful call and an error one, the error with a readable
+  message rather than an empty one.
 
 Plus pure-function vectors for SHA-1 (FIPS 180-1), base64 (RFC 4648),
 and the RFC 6455 §1.3 handshake example.
@@ -84,7 +88,7 @@ lake build
 lake exe leancdp-test
 ```
 
-23 checks, passing via `lake exe` and the built binary directly.
+25 checks, passing via `lake exe` and the built binary directly.
 
 ### Against a real Chromium
 
@@ -102,6 +106,33 @@ lake exe leancdp-chromium-demo
 It calls `Browser.getVersion` and `Target.getTargets`, opens a tab,
 runs JavaScript in it via `Runtime.evaluate`, and screenshots it,
 writing `chromium-demo-screenshot.png`.
+
+### Against a real Firefox
+
+Firefox's `--remote-debugging-port` serves WebDriver BiDi, not CDP --
+`Dialects.bidi` is what talks to it:
+
+```sh
+firefox-esr --headless --remote-debugging-port=9223 \
+  --profile /tmp/leancdp-firefox-demo about:blank &
+```
+
+```lean
+import LeanCDP
+
+open LeanCDP Std.Async
+
+def main : IO Unit := do
+  let client ← (Rpc.connect Dialects.bidi "127.0.0.1" 9223 "/session").block
+  let status ← (client.call "session.status").block
+  IO.println status.compress  -- {"message":"","ready":true}
+  (client.close).block
+```
+
+Confirmed against a real Firefox ESR, both a successful command
+(`session.status`) and an error one (a CDP-shaped method BiDi
+rejects, decoding to `"invalid session id: WebDriver session does
+not exist, or is not active"` instead of an empty message).
 
 ## Using it
 
@@ -134,25 +165,26 @@ lake exe leancdp-probe <ipv4-host> <port> [path]
 Anything else that puts JSON-RPC-shaped requests on a WebSocket --
 `{"id","method","params"}`, responses keyed by that `id`, id-less
 messages as events -- is reachable the same way, by supplying a
-different `Rpc.Dialect`. This package also ships `Dialects.jsonRpc2`,
-for strict JSON-RPC 2.0 servers:
+different `Rpc.Dialect`: a `buildRequest` and a `parse`, nothing more.
+This package ships two others:
 
-```lean
-import LeanCDP
+- `Dialects.jsonRpc2`, for strict JSON-RPC 2.0 servers:
 
-open LeanCDP Std.Async
+  ```lean
+  import LeanCDP
 
-def main : IO Unit := do
-  let client ← (Rpc.connect Dialects.jsonRpc2 "127.0.0.1" 8080 "/").block
-  let result ← (client.call "some.method" (Lean.Json.mkObj [])).block
-  IO.println result.compress
-  (client.close).block
-```
+  open LeanCDP Std.Async
 
-A third dialect -- say, for WebDriver BiDi, whose error envelope is a
-flat `{"error":"<string>","message":"<string>"}` rather than CDP's
-nested `{"error":{"code","message"}}` -- is a `Dialect` value (a
-`buildRequest` and a `parse`), not a change to `Rpc` itself.
+  def main : IO Unit := do
+    let client ← (Rpc.connect Dialects.jsonRpc2 "127.0.0.1" 8080 "/").block
+    let result ← (client.call "some.method" (Lean.Json.mkObj [])).block
+    IO.println result.compress
+    (client.close).block
+  ```
+
+- `Dialects.bidi`, for WebDriver BiDi (what Firefox's
+  `--remote-debugging-port` serves) -- see
+  [Against a real Firefox](#against-a-real-firefox).
 
 ## Design notes
 
@@ -176,15 +208,11 @@ nested `{"error":{"code","message"}}` -- is a `Dialect` value (a
 - `LeanCDP.Page` covers one workflow: open a tab, navigate, wait for
   load, screenshot, run JavaScript, close. Other domains (`DOM`,
   `Network`, `Input`, ...) are reachable via `Protocol.Client
-  .callSession` directly but have no dedicated wrapper.
-- No CDP target other than Chromium. Firefox's `--remote-debugging-port`
-  serves WebDriver BiDi, not CDP -- `WebSocket` interoperates with it
-  (the RFC 6455 handshake and framing are protocol-agnostic), and a
-  well-formed BiDi command round-trips through `Rpc.Client.call` using
-  `Dialects.cdp` since both protocols' success envelopes are
-  `{"id","result"}`, but BiDi's error envelope
-  (`{"error":"<string>","message":"<string>"}`) doesn't match
-  `Dialects.cdp`'s nested `{"error":{"code","message"}}`, so errors
-  from a non-CDP peer decode as empty. A `Dialects.bidi` would fix
-  this the same way `jsonRpc2` was added -- see
-  [Other dialects](#other-dialects) -- but doesn't exist yet.
+  .callSession` directly but have no dedicated wrapper. The same is
+  true of BiDi -- `Dialects.bidi` gets you a working `Rpc.Client`
+  against Firefox, with no `Page`-equivalent convenience layer on top.
+- No session/context-scoped BiDi commands. CDP's `callSession` tags a
+  call with a `sessionId` field at the envelope level; BiDi instead
+  expects a browsing-context id passed *inside* `params`, which
+  `Rpc.Client.call` already supports (it's just another key in the
+  `params` object) but nothing wraps for convenience.

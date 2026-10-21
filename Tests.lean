@@ -25,7 +25,10 @@ code against it over an actual loopback TCP connection:
   calls answered out of send order both resolving to the *correct*
   caller;
 - the JSON-RPC 2.0 test covers `Rpc.connect Dialects.jsonRpc2`'s
-  round trip against a server speaking that dialect instead of CDP's.
+  round trip against a server speaking that dialect instead of CDP's;
+- the BiDi test covers `Dialects.bidi`'s `type`-discriminated success
+  and error envelopes, confirming an error decodes to a readable
+  message rather than an empty one.
 
 A live Chromium is covered separately by `ChromiumDemo.lean`. See
 `README.md` for what's out of scope.
@@ -200,6 +203,31 @@ def jsonRpc2Checks : IO (List Check) := do
   let (_, c) ← ((Testing.runJsonRpc2MockServerOnce srv).concurrently (jsonRpc2Client port)).block
   return [c]
 
+/-- Client side of the BiDi test, against `Mocks.runBidiMockServerOnce`. -/
+def bidiClient (port : UInt16) : Async (List Check) := do
+  let client ← Rpc.connect Dialects.bidi "127.0.0.1" port "/session"
+  let result ← client.call "session.status"
+  let expected := Json.mkObj [("echoedMethod", Json.str "session.status"), ("params", Json.mkObj [])]
+  let successCheck : Check :=
+    ⟨"Rpc.Client.call round-trips over the BiDi dialect's type:success envelope", result == expected⟩
+
+  let errText ← try
+      discard <| client.call "boom"
+      pure ""
+    catch e => pure (toString e)
+  let errorCheck : Check :=
+    ⟨"BiDi's type:error envelope decodes to a readable message, not an empty one",
+      (errText.splitOn "boom error").length > 1 && (errText.splitOn "boom detail").length > 1⟩
+
+  client.close
+  return [successCheck, errorCheck]
+
+def bidiChecks : IO (List Check) := do
+  let port : UInt16 := 19230
+  let srv ← (Testing.listenOn port).block
+  let (_, cs) ← ((Testing.runBidiMockServerOnce srv).concurrently (bidiClient port)).block
+  return cs
+
 -- `main` exits via `IO.Process.exit` rather than `return`: the live checks leave
 -- libuv TCP sockets and its background event-loop thread behind even once
 -- every `Async` action involved has produced its result, which otherwise
@@ -207,7 +235,7 @@ def jsonRpc2Checks : IO (List Check) := do
 def main : IO Unit := do
   let live :=
     (← websocketEchoChecks) ++ (← utf8Checks) ++ (← extensionChecks) ++
-    (← discoveryChecks) ++ (← dnsChecks) ++ (← cdpChecks) ++ (← jsonRpc2Checks)
+    (← discoveryChecks) ++ (← dnsChecks) ++ (← cdpChecks) ++ (← jsonRpc2Checks) ++ (← bidiChecks)
   let all := pureChecks ++ live
   for c in all do
     let status := if c.ok then "ok  " else "FAIL"
