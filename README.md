@@ -143,4 +143,11 @@ lake exe leancdp-probe <ipv4-host> <port> [path]
   load, screenshot, run JavaScript, close. Other domains (`DOM`,
   `Network`, `Input`, ...) are reachable via `Protocol.Client
   .callSession` directly but have no dedicated wrapper.
-- Tested only against Chromium, not Firefox or other CDP targets.
+- No CDP target other than Chromium. Firefox's `--remote-debugging-port`
+  serves WebDriver BiDi, not CDP -- `WebSocket` interoperates with it
+  (the RFC 6455 handshake and framing are protocol-agnostic), and a
+  well-formed BiDi command round-trips through `Protocol.Client.call`
+  since both protocols' success envelopes are `{"id","result"}`, but
+  BiDi's error envelope (`{"error":"<string>","message":"<string>"}`)
+  doesn't match `Message.parse`'s CDP-shaped `{"error":{"code",
+  "message"}}`, so errors from a non-CDP peer decode as empty.
